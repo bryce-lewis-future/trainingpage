@@ -14,6 +14,7 @@ interface ExerciseSearchPopoverProps {
   onSelect: (exercise: Exercise) => void
   anchorRef: RefObject<HTMLDivElement | null>
   autoOpen?: boolean
+  onCancel?: () => void
 }
 
 const ALL_BODY_PARTS: BodyPart[] = [
@@ -259,6 +260,7 @@ export function ExerciseSearchPopover({
   onSelect,
   anchorRef,
   autoOpen,
+  onCancel,
 }: ExerciseSearchPopoverProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -273,6 +275,7 @@ export function ExerciseSearchPopover({
   const listRef = useRef<HTMLUListElement>(null)
 
   const isFirstOpen = useRef(true)
+  const hasCommitted = useRef(!autoOpen)
 
   useEffect(() => {
     if (autoOpen) setOpen(true)
@@ -332,6 +335,7 @@ export function ExerciseSearchPopover({
   }, [activeIndex])
 
   function handleSelect(exercise: Exercise) {
+    hasCommitted.current = true
     onSelect(exercise)
     setOpen(false)
   }
@@ -347,7 +351,11 @@ export function ExerciseSearchPopover({
       e.preventDefault()
       if (results[activeIndex]) handleSelect(results[activeIndex].exercise)
     } else if (e.key === 'Escape') {
-      setOpen(false)
+      if (!hasCommitted.current && onCancel) {
+        onCancel()
+      } else {
+        setOpen(false)
+      }
     }
   }
 

@@ -1,5 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback, type ReactNode, Fragment } from 'react'
-import { AlignJustify, AlignCenter, Menu, Plus, Link, Clock, ChevronDown, MoreHorizontal, HelpCircle } from 'lucide-react'
+import { AlignJustify, AlignCenter, Menu, Plus, Link, Clock, ChevronDown, MoreHorizontal, HelpCircle, Settings } from 'lucide-react'
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
 import {
   DndContext,
@@ -134,6 +134,24 @@ const days = [
     estimatedTime: '30m',
   },
 ]
+
+const SELECTION_COLORS = [
+  { label: 'Orange',  hex: '#fb923c' },
+  { label: 'Blue',    hex: '#60a5fa' },
+  { label: 'Green',   hex: '#4ade80' },
+  { label: 'Purple',  hex: '#c084fc' },
+  { label: 'Pink',    hex: '#f472b6' },
+  { label: 'Cyan',    hex: '#22d3ee' },
+  { label: 'Yellow',  hex: '#facc15' },
+  { label: 'Red',     hex: '#f87171' },
+]
+
+function hexToRgba(hex: string, alpha: number) {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
 
 const LOADING_VERBS = [
   'Spotting', 'Programming', 'Periodizing', 'Chalking up', 'Loading',
@@ -330,6 +348,7 @@ function SortableExerciseCard({
   item,
   onExerciseChange,
   onDelete,
+  onCancel,
   activeId,
   isAltDrag,
   isSelected,
@@ -337,6 +356,7 @@ function SortableExerciseCard({
   item: ExerciseItem
   onExerciseChange: (ex: Exercise) => void
   onDelete: () => void
+  onCancel?: () => void
   activeId?: string | null
   isAltDrag?: boolean
   isSelected?: boolean
@@ -376,8 +396,9 @@ function SortableExerciseCard({
         exercise={item.exercise}
         onExerciseChange={onExerciseChange}
         onDelete={onDelete}
+        onCancel={onCancel}
         autoOpen={item.autoOpen}
-        className={isSelected ? 'ring-2 ring-orange-400/70 ring-offset-2 ring-offset-muted' : undefined}
+        className={isSelected ? 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted' : undefined}
       />
     </div>
   )
@@ -388,21 +409,23 @@ function SortableSectionCard({
   onUpdate,
   onExerciseChange,
   onDeleteExercise,
+  onCancelExercise,
   onAddExercise,
   draggingId,
   isAltDrag,
   isSelected,
-  selectedChildId,
+  isChildSelected,
 }: {
   item: SectionItem
   onUpdate: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime'>>) => void
   onExerciseChange: (id: string, ex: Exercise) => void
   onDeleteExercise: (id: string) => void
+  onCancelExercise?: (id: string) => void
   onAddExercise: (afterIndex: number) => void
   draggingId: string | null
   isAltDrag?: boolean
   isSelected?: boolean
-  selectedChildId?: string | null
+  isChildSelected?: (id: string) => boolean
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const {
@@ -423,7 +446,7 @@ function SortableSectionCard({
       className={cn(
         'mb-3 rounded-xl transition-[background-color,box-shadow] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]',
         collapsed && 'bg-card ring-1 ring-foreground/10',
-        isSelected && !selectedChildId && 'ring-2 ring-orange-400/70 ring-offset-2 ring-offset-muted',
+        isSelected && !isChildSelected && 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted',
       )}
     >
       <SectionCard
@@ -453,9 +476,10 @@ function SortableSectionCard({
                     item={child}
                     onExerciseChange={ex => onExerciseChange(child.id, ex)}
                     onDelete={() => onDeleteExercise(child.id)}
+                    onCancel={onCancelExercise ? () => onCancelExercise(child.id) : undefined}
                     activeId={draggingId}
                     isAltDrag={isAltDrag}
-                    isSelected={selectedChildId === child.id}
+                    isSelected={isChildSelected?.(child.id) ?? false}
                   />
                 </Fragment>
               ))}
@@ -588,17 +612,67 @@ export function DayView() {
   const modeRef = useRef<Mode>('edit')
   const [colored, setColored] = useState(false)
   const [density, setDensity] = useState<Density>('medium')
+  const [selectionColor, setSelectionColor] = useState<string>(
+    () => localStorage.getItem('selectionColor') ?? '#fb923c'
+  )
+  const [navActive, setNavActive] = useState(false)
+  const navActiveRef = useRef(false)
+  function setNavActiveBoth(v: boolean) { navActiveRef.current = v; setNavActive(v) }
   const [selectedCol, setSelectedCol] = useState<number>(0)
+  const selectedColRef = useRef(0)
+  const [anchorCol, setAnchorCol] = useState(0)
+  const anchorColRef = useRef(0)
   const [focusLevel, setFocusLevel] = useState<'column' | 'item' | 'child'>('column')
   const focusLevelRef = useRef<'column' | 'item' | 'child'>('column')
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const selectedItemIdRef = useRef<string | null>(null)
+  const [anchorItemId, setAnchorItemId] = useState<string | null>(null)
+  const anchorItemIdRef = useRef<string | null>(null)
   const [selectedChildId, setSelectedChildId] = useState<string | null>(null)
   const selectedChildIdRef = useRef<string | null>(null)
+  const [anchorChildId, setAnchorChildId] = useState<string | null>(null)
+  const anchorChildIdRef = useRef<string | null>(null)
+
+  type SelectionSnapshot = {
+    navActive: boolean; focusLevel: 'column' | 'item' | 'child'
+    selectedCol: number; anchorCol: number
+    selectedItemId: string | null; anchorItemId: string | null
+    selectedChildId: string | null; anchorChildId: string | null
+  }
+  const prevSelectionRef = useRef<SelectionSnapshot | null>(null)
+
+  function snapshotSelection(): SelectionSnapshot {
+    return {
+      navActive: navActiveRef.current,
+      focusLevel: focusLevelRef.current,
+      selectedCol: selectedColRef.current,
+      anchorCol: anchorColRef.current,
+      selectedItemId: selectedItemIdRef.current,
+      anchorItemId: anchorItemIdRef.current,
+      selectedChildId: selectedChildIdRef.current,
+      anchorChildId: anchorChildIdRef.current,
+    }
+  }
+
+  function restoreSelection(snap: SelectionSnapshot | null) {
+    if (!snap) return
+    setNavActiveBoth(snap.navActive)
+    setFocusLevelBoth(snap.focusLevel)
+    setSelectedColBoth(snap.selectedCol)
+    setAnchorColBoth(snap.anchorCol)
+    setSelectedItemBoth(snap.selectedItemId)
+    setAnchorItemBoth(snap.anchorItemId)
+    setSelectedChildBoth(snap.selectedChildId)
+    setAnchorChildBoth(snap.anchorChildId)
+  }
 
   function setFocusLevelBoth(v: 'column' | 'item' | 'child') { focusLevelRef.current = v; setFocusLevel(v) }
+  function setSelectedColBoth(v: number) { selectedColRef.current = v; setSelectedCol(v) }
+  function setAnchorColBoth(v: number) { anchorColRef.current = v; setAnchorCol(v) }
   function setSelectedItemBoth(id: string | null) { selectedItemIdRef.current = id; setSelectedItemId(id) }
+  function setAnchorItemBoth(id: string | null) { anchorItemIdRef.current = id; setAnchorItemId(id) }
   function setSelectedChildBoth(id: string | null) { selectedChildIdRef.current = id; setSelectedChildId(id) }
+  function setAnchorChildBoth(id: string | null) { anchorChildIdRef.current = id; setAnchorChildId(id) }
   const [workoutItems, setWorkoutItems] = useState<WorkoutItem[]>([
     { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: false },
   ])
@@ -634,20 +708,36 @@ export function DayView() {
         altHeldRef.current = true
         if (activeIdRef.current) setAltDragActive(true)
       }
+      if (modeRef.current === 'edit' && e.key === 'Escape') {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        if (navActiveRef.current) {
+          e.preventDefault()
+          setNavActiveBoth(false)
+          setFocusLevelBoth('column')
+          setSelectedItemBoth(null)
+          setAnchorItemBoth(null)
+          setSelectedChildBoth(null)
+          setAnchorChildBoth(null)
+        }
+      }
       if (modeRef.current === 'edit' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         const target = e.target as HTMLElement
         if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        if (!navActiveRef.current || focusLevelRef.current !== 'column') return
         e.preventDefault()
-        setSelectedCol(prev => e.key === 'ArrowLeft'
-          ? Math.max(0, prev - 1)
-          : Math.min(days.length - 1, prev + 1)
-        )
+        const newCol = e.key === 'ArrowLeft'
+          ? Math.max(0, selectedColRef.current - 1)
+          : Math.min(days.length - 1, selectedColRef.current + 1)
+        setSelectedColBoth(newCol)
+        if (!e.shiftKey) setAnchorColBoth(newCol)
       }
       if (modeRef.current === 'edit' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         const target = e.target as HTMLElement
         if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        if (!navActiveRef.current) return
         const level = focusLevelRef.current
-        if (level === 'column') return // up/down not meaningful at column level
+        if (level === 'column') return
         e.preventDefault()
         const items = workoutItemsRef.current
         const dir = e.key === 'ArrowUp' ? -1 : 1
@@ -656,6 +746,7 @@ export function DayView() {
           if (idx === -1) return
           const next = items[Math.max(0, Math.min(items.length - 1, idx + dir))]
           setSelectedItemBoth(next.id)
+          if (!e.shiftKey) setAnchorItemBoth(next.id)
         } else if (level === 'child') {
           const section = items.find(i => i.id === selectedItemIdRef.current)
           if (section?.type !== 'section') return
@@ -663,39 +754,199 @@ export function DayView() {
           if (idx === -1) return
           const next = section.children[Math.max(0, Math.min(section.children.length - 1, idx + dir))]
           setSelectedChildBoth(next.id)
+          if (!e.shiftKey) setAnchorChildBoth(next.id)
         }
       }
       if (modeRef.current === 'edit' && e.key === 'Tab') {
         const target = e.target as HTMLElement
-        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        const isEditable = target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA'
+        if (isEditable && (!e.shiftKey || !navActiveRef.current)) return
         e.preventDefault()
+        if (isEditable) target.blur()
+        if (!navActiveRef.current) {
+          // First Tab press — activate nav at column level
+          setNavActiveBoth(true)
+          setSelectedColBoth(0)
+          setAnchorColBoth(0)
+          setFocusLevelBoth('column')
+          setSelectedItemBoth(null)
+          setAnchorItemBoth(null)
+          setSelectedChildBoth(null)
+          setAnchorChildBoth(null)
+          return
+        }
         const items = workoutItemsRef.current
         const level = focusLevelRef.current
         if (!e.shiftKey) {
           if (level === 'column') {
-            // Tab from column → topmost item (exercise or section, same level)
+            const firstId = items[0]?.id ?? null
             setFocusLevelBoth('item')
-            setSelectedItemBoth(items[0]?.id ?? null)
+            setSelectedItemBoth(firstId)
+            setAnchorItemBoth(firstId)
             setSelectedChildBoth(null)
+            setAnchorChildBoth(null)
           } else if (level === 'item') {
-            // Tab from item → only go deeper if it's a section (like opening a folder)
             const item = items.find(i => i.id === selectedItemIdRef.current)
             if (item?.type === 'section' && item.children.length > 0) {
+              const firstChildId = item.children[0].id
               setFocusLevelBoth('child')
-              setSelectedChildBoth(item.children[0].id)
+              setSelectedChildBoth(firstChildId)
+              setAnchorChildBoth(firstChildId)
             }
-            // exercise = already deepest, do nothing
           }
         } else {
           // Shift+Tab: go up
           if (level === 'child') {
             setFocusLevelBoth('item')
             setSelectedChildBoth(null)
+            setAnchorChildBoth(null)
           } else if (level === 'item') {
             setFocusLevelBoth('column')
             setSelectedItemBoth(null)
+            setAnchorItemBoth(null)
             setSelectedChildBoth(null)
+            setAnchorChildBoth(null)
+          } else if (level === 'column') {
+            setNavActiveBoth(false)
           }
+        }
+      }
+      if (modeRef.current === 'edit' && navActiveRef.current && e.key === 'n') {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        e.preventDefault()
+        const level = focusLevelRef.current
+        const items = workoutItemsRef.current
+        if (level === 'column') {
+          addExercise()
+        } else if (level === 'item') {
+          const idx = items.findIndex(i => i.id === selectedItemIdRef.current)
+          addExercise(idx === -1 ? undefined : idx + 1)
+        } else if (level === 'child') {
+          const sectionId = selectedItemIdRef.current
+          const section = items.find(i => i.id === sectionId)
+          if (section?.type !== 'section') return
+          const childIdx = section.children.findIndex(c => c.id === selectedChildIdRef.current)
+          const insertAt = childIdx === -1 ? section.children.length : childIdx + 1
+          prevSelectionRef.current = snapshotSelection()
+          const newItem: ExerciseItem = { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: true }
+          setWorkoutItems(prev => prev.map(item => {
+            if (item.id !== sectionId || item.type !== 'section') return item
+            const children = [...item.children]
+            children.splice(insertAt, 0, newItem)
+            return { ...item, children }
+          }))
+          setNavActiveBoth(true)
+          setFocusLevelBoth('child')
+          setSelectedChildBoth(newItem.id)
+          setAnchorChildBoth(newItem.id)
+        }
+      }
+      if (modeRef.current === 'edit' && navActiveRef.current && e.key === 's') {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        if (focusLevelRef.current !== 'item') return
+        e.preventDefault()
+        const items = workoutItemsRef.current
+        const anchorIdx = items.findIndex(i => i.id === anchorItemIdRef.current)
+        const cursorIdx = items.findIndex(i => i.id === selectedItemIdRef.current)
+        if (anchorIdx === -1 || cursorIdx === -1) return
+        const lo = Math.min(anchorIdx, cursorIdx)
+        const hi = Math.max(anchorIdx, cursorIdx)
+        if (hi - lo < 1) return
+        const selected = items.slice(lo, hi + 1)
+        const children = selected.filter((i): i is ExerciseItem => i.type === 'exercise')
+        if (children.length !== selected.length) return
+        const id = crypto.randomUUID()
+        const section: SectionItem = { id, type: 'section', title: '', subtitle: '', estimatedTime: '10m', children, isGeneratingName: true }
+        setWorkoutItems(prev => {
+          const next = [...prev]
+          next.splice(lo, children.length, section)
+          return next
+        })
+        setFocusLevelBoth('item')
+        setSelectedItemBoth(id)
+        setAnchorItemBoth(id)
+        setSelectedChildBoth(null)
+        setAnchorChildBoth(null)
+        generateSectionName(children.map(c => c.exercise)).then(name => {
+          setWorkoutItems(prev => prev.map(item =>
+            item.id === id ? { ...item, title: name, isGeneratingName: false, autoSelect: true } : item
+          ))
+        })
+      }
+      if (modeRef.current === 'edit' && navActiveRef.current && (e.key === 'Backspace' || e.key === 'Delete')) {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        const level = focusLevelRef.current
+        if (level === 'column') return
+        e.preventDefault()
+        const items = workoutItemsRef.current
+        const snapshot = items
+        const selSnap = snapshotSelection()
+        const toastId = crypto.randomUUID()
+        if (level === 'item') {
+          const anchorIdx = items.findIndex(i => i.id === anchorItemIdRef.current)
+          const cursorIdx = items.findIndex(i => i.id === selectedItemIdRef.current)
+          if (anchorIdx === -1 || cursorIdx === -1) return
+          const lo = Math.min(anchorIdx, cursorIdx)
+          const hi = Math.max(anchorIdx, cursorIdx)
+          const deletedCount = hi - lo + 1
+          const deleted = items.slice(lo, hi + 1)
+          const next = [...items]
+          next.splice(lo, deletedCount)
+          setWorkoutItems(next)
+          if (next.length === 0) {
+            setNavActiveBoth(false)
+            setFocusLevelBoth('column')
+            setSelectedItemBoth(null)
+            setAnchorItemBoth(null)
+          } else {
+            const newId = next[Math.min(lo, next.length - 1)].id
+            setSelectedItemBoth(newId)
+            setAnchorItemBoth(newId)
+          }
+          const label = deletedCount === 1
+            ? (deleted[0].type === 'section' ? 'Section deleted' : 'Exercise deleted')
+            : `${deletedCount} items deleted`
+          setToasts(t => [...t, { id: toastId, message: label, onUndo: () => { setWorkoutItems(snapshot); restoreSelection(selSnap) } }])
+        } else if (level === 'child') {
+          const sectionId = selectedItemIdRef.current
+          const section = items.find(i => i.id === sectionId)
+          if (section?.type !== 'section') return
+          const anchorChildIdx = section.children.findIndex(c => c.id === anchorChildIdRef.current)
+          const cursorChildIdx = section.children.findIndex(c => c.id === selectedChildIdRef.current)
+          if (anchorChildIdx === -1 || cursorChildIdx === -1) return
+          const lo = Math.min(anchorChildIdx, cursorChildIdx)
+          const hi = Math.max(anchorChildIdx, cursorChildIdx)
+          const newChildren = section.children.filter((_, i) => i < lo || i > hi)
+          let next: WorkoutItem[]
+          if (newChildren.length === 0) {
+            next = items.filter(i => i.id !== sectionId)
+            const sectionIdx = items.findIndex(i => i.id === sectionId)
+            if (next.length === 0) {
+              setNavActiveBoth(false)
+              setFocusLevelBoth('column')
+              setSelectedItemBoth(null)
+              setAnchorItemBoth(null)
+            } else {
+              const newId = next[Math.min(sectionIdx, next.length - 1)].id
+              setFocusLevelBoth('item')
+              setSelectedItemBoth(newId)
+              setAnchorItemBoth(newId)
+            }
+            setSelectedChildBoth(null)
+            setAnchorChildBoth(null)
+          } else {
+            next = items.map(i => i.id === sectionId && i.type === 'section' ? { ...i, children: newChildren } : i)
+            const newChildId = newChildren[Math.min(lo, newChildren.length - 1)].id
+            setSelectedChildBoth(newChildId)
+            setAnchorChildBoth(newChildId)
+          }
+          setWorkoutItems(next)
+          const deletedCount = hi - lo + 1
+          const label = deletedCount === 1 ? 'Exercise deleted' : `${deletedCount} exercises deleted`
+          setToasts(t => [...t, { id: toastId, message: label, onUndo: () => { setWorkoutItems(snapshot); restoreSelection(selSnap) } }])
         }
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
@@ -879,12 +1130,19 @@ export function DayView() {
   }, [activeId, workoutItems])
 
   function addExercise(at?: number) {
+    prevSelectionRef.current = snapshotSelection()
     const item: ExerciseItem = { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: true }
     setWorkoutItems(prev => {
       const next = [...prev]
       next.splice(at ?? next.length, 0, item)
       return next
     })
+    setNavActiveBoth(true)
+    setFocusLevelBoth('item')
+    setSelectedItemBoth(item.id)
+    setAnchorItemBoth(item.id)
+    setSelectedChildBoth(null)
+    setAnchorChildBoth(null)
   }
 
   async function addSection(at: number) {
@@ -914,25 +1172,25 @@ export function DayView() {
     ))
   }
 
-  const deleteExercise = useCallback((id: string) => {
+  const deleteExercise = useCallback((id: string, opts?: { silent?: boolean }) => {
+    let snapshot: WorkoutItem[] = []
     setWorkoutItems(prev => {
-      const snapshot = prev
-      const next = prev
+      snapshot = prev
+      return prev
         .filter(item => item.id !== id)
         .map(item => item.type === 'section'
           ? { ...item, children: item.children.filter(c => c.id !== id) }
           : item
         )
-
+    })
+    if (!opts?.silent) {
       const toastId = crypto.randomUUID()
       setToasts(t => [...t, {
         id: toastId,
         message: 'Exercise deleted',
         onUndo: () => setWorkoutItems(snapshot),
       }])
-
-      return next
-    })
+    }
   }, [])
 
   function updateExercise(id: string, exercise: Exercise) {
@@ -958,12 +1216,26 @@ export function DayView() {
     }))
   }
 
+  const colLo = Math.min(anchorCol, selectedCol)
+  const colHi = Math.max(anchorCol, selectedCol)
+  const itemLo = Math.min(
+    workoutItems.findIndex(x => x.id === anchorItemId),
+    workoutItems.findIndex(x => x.id === selectedItemId),
+  )
+  const itemHi = Math.max(
+    workoutItems.findIndex(x => x.id === anchorItemId),
+    workoutItems.findIndex(x => x.id === selectedItemId),
+  )
+
   return (
-    <div className="min-h-screen bg-muted p-6" onClick={() => {
-      if (modeRef.current === 'edit' && focusLevelRef.current !== 'column') {
+    <div className="min-h-screen bg-muted p-6" style={{ '--sel-ring': hexToRgba(selectionColor, 0.7) } as React.CSSProperties} onClick={() => {
+      if (modeRef.current === 'edit' && navActiveRef.current) {
+        setNavActiveBoth(false)
         setFocusLevelBoth('column')
         setSelectedItemBoth(null)
+        setAnchorItemBoth(null)
         setSelectedChildBoth(null)
+        setAnchorChildBoth(null)
       }
     }}>
       <ToastContainer toasts={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
@@ -993,6 +1265,7 @@ export function DayView() {
               onClick={() => {
   modeRef.current = id
   setMode(id)
+  setNavActiveBoth(false)
   if (id === 'edit') {
     setSelectedCol(0)
     setFocusLevelBoth('column')
@@ -1014,7 +1287,7 @@ export function DayView() {
             {i === 0 && <DayHeader {...day} />}
             <div className={cn(
               'flex flex-col rounded-xl bg-foreground/6 p-3 transition-shadow duration-150',
-              mode === 'edit' && focusLevel === 'column' && selectedCol === i && 'ring-2 ring-orange-400/70 ring-offset-2 ring-offset-muted',
+              mode === 'edit' && navActive && focusLevel === 'column' && i >= colLo && i <= colHi && 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted',
             )}>
               {i === 0 && (
                 <DndContext
@@ -1053,9 +1326,14 @@ export function DayView() {
                             item={item}
                             onExerciseChange={ex => updateExercise(item.id, ex)}
                             onDelete={() => deleteExercise(item.id)}
+                            onCancel={() => {
+                              deleteExercise(item.id, { silent: true })
+                              restoreSelection(prevSelectionRef.current)
+                              prevSelectionRef.current = null
+                            }}
                             activeId={activeId}
                             isAltDrag={isAltDrag}
-                            isSelected={focusLevel === 'item' && selectedItemId === item.id}
+                            isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
                           />
                         ) : (
                           <SortableSectionCard
@@ -1063,11 +1341,23 @@ export function DayView() {
                             onUpdate={updates => updateSection(item.id, updates)}
                             onExerciseChange={updateExercise}
                             onDeleteExercise={deleteExercise}
+                            onCancelExercise={id => {
+                              deleteExercise(id, { silent: true })
+                              restoreSelection(prevSelectionRef.current)
+                              prevSelectionRef.current = null
+                            }}
                             onAddExercise={afterIndex => addExerciseToSection(item.id, afterIndex)}
                             draggingId={activeId}
                             isAltDrag={isAltDrag}
-                            isSelected={focusLevel === 'item' && selectedItemId === item.id}
-                            selectedChildId={focusLevel === 'child' && selectedItemId === item.id ? selectedChildId : null}
+                            isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
+                            isChildSelected={navActive && focusLevel === 'child' && selectedItemId === item.id ? childId => {
+                              const sec = item as SectionItem
+                              const aIdx = sec.children.findIndex(c => c.id === anchorChildId)
+                              const cIdx = sec.children.findIndex(c => c.id === selectedChildId)
+                              if (aIdx === -1 || cIdx === -1) return childId === selectedChildId
+                              const idx = sec.children.findIndex(c => c.id === childId)
+                              return idx >= Math.min(aIdx, cIdx) && idx <= Math.max(aIdx, cIdx)
+                            } : undefined}
                           />
                         )}
                       </Fragment>
@@ -1094,7 +1384,7 @@ export function DayView() {
                     )}
                   </DragOverlay>
                   <button
-                    onClick={() => addExercise()}
+                    onClick={e => { e.stopPropagation(); addExercise() }}
                     className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-border py-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
                   >
                     <Plus className="size-3.5" />
@@ -1112,43 +1402,109 @@ export function DayView() {
         ))}
       </div>
 
-      {/* Help button — bottom right */}
-      <PopoverPrimitive.Root>
-        <PopoverPrimitive.Trigger className="fixed bottom-6 right-6 flex size-8 items-center justify-center rounded-full bg-foreground/10 text-foreground/50 hover:bg-foreground/15 hover:text-foreground/80 transition-colors">
+      {/* Bottom-right controls */}
+      <div className="fixed bottom-6 right-6 flex items-center gap-2">
+
+        {/* Settings */}
+        <PopoverPrimitive.Root>
+          <PopoverPrimitive.Trigger className="flex size-8 items-center justify-center rounded-full bg-foreground/10 text-foreground/50 hover:bg-foreground/15 hover:text-foreground/80 transition-colors">
+            <Settings className="size-4" />
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Positioner side="top" align="end" sideOffset={8} positionMethod="fixed" collisionPadding={16}>
+              <PopoverPrimitive.Popup className={cn(
+                'z-50 w-64 rounded-xl bg-card p-4 shadow-xl ring-1 ring-foreground/10',
+                'transition-[opacity,scale] duration-150 ease-out',
+                'data-starting-style:opacity-0 data-starting-style:scale-[0.98]',
+                'data-ending-style:opacity-0 data-ending-style:scale-[0.98]',
+              )}>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Settings</p>
+                <div className="flex flex-col gap-3">
+                  <div>
+                    <p className="mb-2 text-xs text-muted-foreground">Selection frame color</p>
+                    <div className="flex flex-wrap gap-2">
+                      {SELECTION_COLORS.map(({ label, hex }) => (
+                        <button
+                          key={hex}
+                          title={label}
+                          onClick={() => {
+                            setSelectionColor(hex)
+                            localStorage.setItem('selectionColor', hex)
+                          }}
+                          className={cn(
+                            'size-6 rounded-full ring-offset-2 ring-offset-card transition-[transform,box-shadow] duration-150 hover:scale-110',
+                            selectionColor === hex ? 'ring-2 ring-foreground/50' : 'ring-1 ring-foreground/10',
+                          )}
+                          style={{ backgroundColor: hex }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </PopoverPrimitive.Popup>
+            </PopoverPrimitive.Positioner>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
+
+        {/* Help */}
+        <PopoverPrimitive.Root>
+        <PopoverPrimitive.Trigger className="flex size-8 items-center justify-center rounded-full bg-foreground/10 text-foreground/50 hover:bg-foreground/15 hover:text-foreground/80 transition-colors">
           <HelpCircle className="size-4" />
         </PopoverPrimitive.Trigger>
         <PopoverPrimitive.Portal>
           <PopoverPrimitive.Positioner side="top" align="end" sideOffset={8} positionMethod="fixed" collisionPadding={16}>
             <PopoverPrimitive.Popup className={cn(
-              'z-50 w-72 rounded-xl bg-card p-4 shadow-xl ring-1 ring-foreground/10',
+              'z-50 w-80 rounded-xl bg-card p-4 shadow-xl ring-1 ring-foreground/10',
               'transition-[opacity,scale] duration-150 ease-out',
               'data-starting-style:opacity-0 data-starting-style:scale-[0.98]',
               'data-ending-style:opacity-0 data-ending-style:scale-[0.98]',
             )}>
-              <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Keyboard Shortcuts</p>
-              <div className="flex flex-col gap-2">
-                {[
-                  { keys: ['←', '→'], label: 'Move between day columns' },
-                  { keys: ['↑', '↓'], label: 'Move between items' },
-                  { keys: ['Tab'], label: 'Focus deeper (open section)' },
-                  { keys: ['Shift', 'Tab'], label: 'Focus up a level' },
-                  { keys: ['⌘', 'Z'], label: 'Undo last deletion' },
-                  { keys: ['Option', 'Drag'], label: 'Duplicate an exercise' },
-                ].map(({ keys, label }) => (
-                  <div key={label} className="flex items-center justify-between gap-4">
-                    <span className="text-xs text-muted-foreground">{label}</span>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {keys.map(k => (
-                        <kbd key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70 ring-1 ring-foreground/10">{k}</kbd>
-                      ))}
-                    </div>
+              {([
+                {
+                  heading: 'Navigation',
+                  rows: [
+                    { keys: ['Tab'],           label: 'Enter focus mode / go deeper' },
+                    { keys: ['Shift', 'Tab'],  label: 'Go up a level' },
+                    { keys: ['←', '→'],        label: 'Move between days' },
+                    { keys: ['↑', '↓'],        label: 'Move between items' },
+                    { keys: ['Shift', '↑↓'],   label: 'Extend selection' },
+                    { keys: ['Esc'],           label: 'Exit focus mode' },
+                  ],
+                },
+                {
+                  heading: 'Actions',
+                  rows: [
+                    { keys: ['N'],             label: 'Add exercise below selection' },
+                    { keys: ['S'],             label: 'Group selection into section' },
+                    { keys: ['⌫'],             label: 'Delete selected item(s)' },
+                    { keys: ['⌘', 'Z'],        label: 'Undo last deletion' },
+                    { keys: ['Option', 'Drag'], label: 'Duplicate an exercise' },
+                  ],
+                },
+              ] as { heading: string; rows: { keys: string[]; label: string }[] }[]).map(({ heading, rows }, gi) => (
+                <div key={heading}>
+                  {gi > 0 && <div className="my-3 border-t border-border" />}
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{heading}</p>
+                  <div className="flex flex-col gap-2">
+                    {rows.map(({ keys, label }) => (
+                      <div key={label} className="flex items-center justify-between gap-4">
+                        <span className="text-xs text-muted-foreground">{label}</span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {keys.map(k => (
+                            <kbd key={k} className="rounded bg-muted px-1.5 py-0.5 font-mono text-[11px] text-foreground/70 ring-1 ring-foreground/10">{k}</kbd>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </PopoverPrimitive.Popup>
           </PopoverPrimitive.Positioner>
         </PopoverPrimitive.Portal>
       </PopoverPrimitive.Root>
+
+      </div>
     </div>
   )
 }

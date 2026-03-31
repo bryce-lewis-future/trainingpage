@@ -10,11 +10,12 @@ interface ExerciseCardProps {
   exercise: Exercise
   onExerciseChange?: (exercise: Exercise) => void
   onDelete?: () => void
+  onCancel?: () => void
   autoOpen?: boolean
   className?: string
 }
 
-export function ExerciseCard({ exercise, onExerciseChange, onDelete, autoOpen, className }: ExerciseCardProps) {
+export function ExerciseCard({ exercise, onExerciseChange, onDelete, onCancel, autoOpen, className }: ExerciseCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -28,6 +29,7 @@ export function ExerciseCard({ exercise, onExerciseChange, onDelete, autoOpen, c
               onSelect={onExerciseChange ?? (() => {})}
               anchorRef={cardRef}
               autoOpen={autoOpen}
+              onCancel={onCancel}
             />
           </div>
           <PopoverPrimitive.Root open={menuOpen} onOpenChange={setMenuOpen}>
