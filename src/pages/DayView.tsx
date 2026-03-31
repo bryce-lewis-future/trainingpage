@@ -71,6 +71,17 @@ async function generateSectionName(exercises: Exercise[]): Promise<string> {
 
 type WorkoutItem = ExerciseItem | SectionItem
 
+function deepCopyItem(item: WorkoutItem): WorkoutItem {
+  if (item.type === 'exercise') return { ...item, id: crypto.randomUUID(), autoOpen: false }
+  return {
+    ...item,
+    id: crypto.randomUUID(),
+    autoSelect: false,
+    isGeneratingName: false,
+    children: item.children.map(c => ({ ...c, id: crypto.randomUUID(), autoOpen: false })),
+  }
+}
+
 function PaletteIcon({ rainbow }: { rainbow: boolean }) {
   const stroke = rainbow ? 'url(#rg)' : 'currentColor'
   return (
@@ -352,6 +363,14 @@ function SortableExerciseCard({
   activeId,
   isAltDrag,
   isSelected,
+  showSets,
+  selectedSetIndex,
+  onSetCountChange,
+  onSetAdded,
+  insertSetCmd,
+  deleteSetCmd,
+  onSetDeleted,
+  defaultSetCount,
 }: {
   item: ExerciseItem
   onExerciseChange: (ex: Exercise) => void
@@ -360,6 +379,14 @@ function SortableExerciseCard({
   activeId?: string | null
   isAltDrag?: boolean
   isSelected?: boolean
+  showSets?: boolean
+  selectedSetIndex?: number
+  onSetCountChange?: (count: number) => void
+  onSetAdded?: (newIndex: number) => void
+  insertSetCmd?: { afterIndex: number } | null
+  deleteSetCmd?: { index: number } | null
+  onSetDeleted?: (newIndex: number | null) => void
+  defaultSetCount?: number
 }) {
   const {
     attributes,
@@ -398,6 +425,14 @@ function SortableExerciseCard({
         onDelete={onDelete}
         onCancel={onCancel}
         autoOpen={item.autoOpen}
+        showSets={showSets}
+        selectedSetIndex={selectedSetIndex}
+        onSetCountChange={onSetCountChange}
+        onSetAdded={onSetAdded}
+        insertSetCmd={insertSetCmd}
+        deleteSetCmd={deleteSetCmd}
+        onSetDeleted={onSetDeleted}
+        defaultSetCount={defaultSetCount}
         className={isSelected ? 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted' : undefined}
       />
     </div>
@@ -415,6 +450,17 @@ function SortableSectionCard({
   isAltDrag,
   isSelected,
   isChildSelected,
+  showSets,
+  selectedSetIndex,
+  selectedSetChildId,
+  getSetCountCallback,
+  onChildSetAdded,
+  insertSetCmd,
+  insertSetChildId,
+  deleteSetCmd,
+  deleteSetChildId,
+  onChildSetDeleted,
+  defaultSetCount,
 }: {
   item: SectionItem
   onUpdate: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime'>>) => void
@@ -426,6 +472,17 @@ function SortableSectionCard({
   isAltDrag?: boolean
   isSelected?: boolean
   isChildSelected?: (id: string) => boolean
+  showSets?: boolean
+  selectedSetIndex?: number
+  selectedSetChildId?: string
+  getSetCountCallback?: (childId: string) => ((count: number) => void) | undefined
+  onChildSetAdded?: (childId: string, newIndex: number) => void
+  insertSetCmd?: { afterIndex: number } | null
+  insertSetChildId?: string
+  deleteSetCmd?: { index: number } | null
+  deleteSetChildId?: string
+  onChildSetDeleted?: (childId: string, newIndex: number | null) => void
+  defaultSetCount?: number
 }) {
   const [collapsed, setCollapsed] = useState(false)
   const {
@@ -480,6 +537,14 @@ function SortableSectionCard({
                     activeId={draggingId}
                     isAltDrag={isAltDrag}
                     isSelected={isChildSelected?.(child.id) ?? false}
+                    showSets={showSets}
+                    selectedSetIndex={child.id === selectedSetChildId ? selectedSetIndex : undefined}
+                    onSetCountChange={getSetCountCallback?.(child.id)}
+                    onSetAdded={onChildSetAdded ? (newIndex: number) => onChildSetAdded(child.id, newIndex) : undefined}
+                    insertSetCmd={child.id === insertSetChildId ? insertSetCmd : undefined}
+                    deleteSetCmd={child.id === deleteSetChildId ? deleteSetCmd : undefined}
+                    onSetDeleted={onChildSetDeleted ? (newIndex) => onChildSetDeleted(child.id, newIndex) : undefined}
+                    defaultSetCount={defaultSetCount}
                   />
                 </Fragment>
               ))}
@@ -612,9 +677,18 @@ export function DayView() {
   const modeRef = useRef<Mode>('edit')
   const [colored, setColored] = useState(false)
   const [density, setDensity] = useState<Density>('medium')
+  const densityRef = useRef<Density>('medium')
   const [selectionColor, setSelectionColor] = useState<string>(
     () => localStorage.getItem('selectionColor') ?? '#fb923c'
   )
+  const [defaultSetCount, setDefaultSetCount] = useState<number>(
+    () => parseInt(localStorage.getItem('defaultSetCount') ?? '1', 10)
+  )
+  function updateDefaultSetCount(n: number) {
+    const clamped = Math.max(1, Math.min(10, n))
+    setDefaultSetCount(clamped)
+    localStorage.setItem('defaultSetCount', String(clamped))
+  }
   const [navActive, setNavActive] = useState(false)
   const navActiveRef = useRef(false)
   function setNavActiveBoth(v: boolean) { navActiveRef.current = v; setNavActive(v) }
@@ -622,8 +696,8 @@ export function DayView() {
   const selectedColRef = useRef(0)
   const [anchorCol, setAnchorCol] = useState(0)
   const anchorColRef = useRef(0)
-  const [focusLevel, setFocusLevel] = useState<'column' | 'item' | 'child'>('column')
-  const focusLevelRef = useRef<'column' | 'item' | 'child'>('column')
+  const [focusLevel, setFocusLevel] = useState<'column' | 'item' | 'child' | 'set'>('column')
+  const focusLevelRef = useRef<'column' | 'item' | 'child' | 'set'>('column')
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const selectedItemIdRef = useRef<string | null>(null)
   const [anchorItemId, setAnchorItemId] = useState<string | null>(null)
@@ -634,7 +708,7 @@ export function DayView() {
   const anchorChildIdRef = useRef<string | null>(null)
 
   type SelectionSnapshot = {
-    navActive: boolean; focusLevel: 'column' | 'item' | 'child'
+    navActive: boolean; focusLevel: 'column' | 'item' | 'child' | 'set'
     selectedCol: number; anchorCol: number
     selectedItemId: string | null; anchorItemId: string | null
     selectedChildId: string | null; anchorChildId: string | null
@@ -666,13 +740,19 @@ export function DayView() {
     setAnchorChildBoth(snap.anchorChildId)
   }
 
-  function setFocusLevelBoth(v: 'column' | 'item' | 'child') { focusLevelRef.current = v; setFocusLevel(v) }
+  function setFocusLevelBoth(v: 'column' | 'item' | 'child' | 'set') { focusLevelRef.current = v; setFocusLevel(v) }
   function setSelectedColBoth(v: number) { selectedColRef.current = v; setSelectedCol(v) }
   function setAnchorColBoth(v: number) { anchorColRef.current = v; setAnchorCol(v) }
   function setSelectedItemBoth(id: string | null) { selectedItemIdRef.current = id; setSelectedItemId(id) }
   function setAnchorItemBoth(id: string | null) { anchorItemIdRef.current = id; setAnchorItemId(id) }
   function setSelectedChildBoth(id: string | null) { selectedChildIdRef.current = id; setSelectedChildId(id) }
   function setAnchorChildBoth(id: string | null) { anchorChildIdRef.current = id; setAnchorChildId(id) }
+  const [selectedSetIndex, setSelectedSetIndex] = useState<number | null>(null)
+  const selectedSetIndexRef = useRef<number | null>(null)
+  function setSelectedSetIndexBoth(v: number | null) { selectedSetIndexRef.current = v; setSelectedSetIndex(v) }
+  const setCountsRef = useRef<Map<string, number>>(new Map())
+  const [insertSetCmd, setInsertSetCmd] = useState<{ afterIndex: number } | null>(null)
+  const [deleteSetCmd, setDeleteSetCmd] = useState<{ index: number } | null>(null)
   const [workoutItems, setWorkoutItems] = useState<WorkoutItem[]>([
     { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: false },
   ])
@@ -685,6 +765,8 @@ export function DayView() {
   const toastsRef = useRef(toasts)
   useEffect(() => { toastsRef.current = toasts }, [toasts])
   const sensors = useDragSensors()
+
+  const clipboardRef = useRef<WorkoutItem[]>([])
 
   // Alt-drag (duplicate) state — refs for event handlers, state for rendering
   const altHeldRef = useRef(false)
@@ -755,6 +837,11 @@ export function DayView() {
           const next = section.children[Math.max(0, Math.min(section.children.length - 1, idx + dir))]
           setSelectedChildBoth(next.id)
           if (!e.shiftKey) setAnchorChildBoth(next.id)
+        } else if (level === 'set') {
+          const exerciseId = selectedChildIdRef.current ?? selectedItemIdRef.current
+          const count = exerciseId ? (setCountsRef.current.get(exerciseId) ?? 1) : 1
+          const cur = selectedSetIndexRef.current ?? 0
+          setSelectedSetIndexBoth(Math.max(0, Math.min(count - 1, cur + dir)))
         }
       }
       if (modeRef.current === 'edit' && e.key === 'Tab') {
@@ -785,6 +872,7 @@ export function DayView() {
             setAnchorItemBoth(firstId)
             setSelectedChildBoth(null)
             setAnchorChildBoth(null)
+            setSelectedSetIndexBoth(null)
           } else if (level === 'item') {
             const item = items.find(i => i.id === selectedItemIdRef.current)
             if (item?.type === 'section' && item.children.length > 0) {
@@ -792,11 +880,27 @@ export function DayView() {
               setFocusLevelBoth('child')
               setSelectedChildBoth(firstChildId)
               setAnchorChildBoth(firstChildId)
+              setSelectedSetIndexBoth(null)
+            } else if (item?.type === 'exercise' && densityRef.current !== 'contracted') {
+              setInsertSetCmd(null)
+              setFocusLevelBoth('set')
+              setSelectedSetIndexBoth(0)
             }
+          } else if (level === 'child' && densityRef.current !== 'contracted') {
+            setInsertSetCmd(null)
+            setFocusLevelBoth('set')
+            setSelectedSetIndexBoth(0)
           }
         } else {
           // Shift+Tab: go up
-          if (level === 'child') {
+          if (level === 'set') {
+            setSelectedSetIndexBoth(null)
+            if (selectedChildIdRef.current) {
+              setFocusLevelBoth('child')
+            } else {
+              setFocusLevelBoth('item')
+            }
+          } else if (level === 'child') {
             setFocusLevelBoth('item')
             setSelectedChildBoth(null)
             setAnchorChildBoth(null)
@@ -840,6 +944,10 @@ export function DayView() {
           setFocusLevelBoth('child')
           setSelectedChildBoth(newItem.id)
           setAnchorChildBoth(newItem.id)
+        } else if (level === 'set') {
+          const afterIndex = selectedSetIndexRef.current ?? 0
+          setInsertSetCmd({ afterIndex })
+          setSelectedSetIndexBoth(afterIndex + 1)
         }
       }
       if (modeRef.current === 'edit' && navActiveRef.current && e.key === 's') {
@@ -947,7 +1055,82 @@ export function DayView() {
           const deletedCount = hi - lo + 1
           const label = deletedCount === 1 ? 'Exercise deleted' : `${deletedCount} exercises deleted`
           setToasts(t => [...t, { id: toastId, message: label, onUndo: () => { setWorkoutItems(snapshot); restoreSelection(selSnap) } }])
+        } else if (level === 'set') {
+          const idx = selectedSetIndexRef.current
+          if (idx === null) return
+          setDeleteSetCmd({ index: idx })
         }
+      }
+      if (modeRef.current === 'edit' && navActiveRef.current && (e.metaKey || e.ctrlKey) && e.key === 'c') {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        const level = focusLevelRef.current
+        if (level === 'column') return
+        e.preventDefault()
+        const items = workoutItemsRef.current
+        if (level === 'item') {
+          const anchorIdx = items.findIndex(i => i.id === anchorItemIdRef.current)
+          const cursorIdx = items.findIndex(i => i.id === selectedItemIdRef.current)
+          if (anchorIdx === -1 || cursorIdx === -1) return
+          const lo = Math.min(anchorIdx, cursorIdx)
+          const hi = Math.max(anchorIdx, cursorIdx)
+          clipboardRef.current = items.slice(lo, hi + 1)
+        } else if (level === 'child') {
+          const section = items.find(i => i.id === selectedItemIdRef.current)
+          if (section?.type !== 'section') return
+          const anchorChildIdx = section.children.findIndex(c => c.id === anchorChildIdRef.current)
+          const cursorChildIdx = section.children.findIndex(c => c.id === selectedChildIdRef.current)
+          if (anchorChildIdx === -1 || cursorChildIdx === -1) return
+          const lo = Math.min(anchorChildIdx, cursorChildIdx)
+          const hi = Math.max(anchorChildIdx, cursorChildIdx)
+          clipboardRef.current = section.children.slice(lo, hi + 1)
+        }
+      }
+      if (modeRef.current === 'edit' && navActiveRef.current && (e.metaKey || e.ctrlKey) && e.key === 'v') {
+        const target = e.target as HTMLElement
+        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        const level = focusLevelRef.current
+        if (level === 'column') return
+        if (clipboardRef.current.length === 0) return
+        e.preventDefault()
+        const items = workoutItemsRef.current
+        const snapshot = items
+        const selSnap = snapshotSelection()
+        const copies = clipboardRef.current.map(deepCopyItem)
+        const toastId = crypto.randomUUID()
+        const count = clipboardRef.current.length
+        const label = count === 1
+          ? (clipboardRef.current[0].type === 'section' ? 'Section pasted' : 'Exercise pasted')
+          : `${count} items pasted`
+        if (level === 'item') {
+          const cursorIdx = items.findIndex(i => i.id === selectedItemIdRef.current)
+          const insertAt = cursorIdx === -1 ? items.length : cursorIdx + 1
+          const next = [...items]
+          next.splice(insertAt, 0, ...copies)
+          setWorkoutItems(next)
+          setSelectedItemBoth(copies[copies.length - 1].id)
+          setAnchorItemBoth(copies[0].id)
+          setSelectedChildBoth(null)
+          setAnchorChildBoth(null)
+        } else if (level === 'child') {
+          const sectionId = selectedItemIdRef.current
+          const section = items.find(i => i.id === sectionId)
+          if (section?.type !== 'section') return
+          const cursorChildIdx = section.children.findIndex(c => c.id === selectedChildIdRef.current)
+          const insertAt = cursorChildIdx === -1 ? section.children.length : cursorChildIdx + 1
+          // Flatten any sections in clipboard to their children
+          const toPaste: ExerciseItem[] = []
+          for (const item of copies) {
+            if (item.type === 'exercise') toPaste.push(item)
+            else toPaste.push(...item.children.map(c => ({ ...c, id: crypto.randomUUID(), autoOpen: false }) as ExerciseItem))
+          }
+          const newChildren = [...section.children]
+          newChildren.splice(insertAt, 0, ...toPaste)
+          setWorkoutItems(items.map(i => i.id === sectionId && i.type === 'section' ? { ...i, children: newChildren } : i))
+          setSelectedChildBoth(toPaste[toPaste.length - 1].id)
+          setAnchorChildBoth(toPaste[0].id)
+        }
+        setToasts(t => [...t, { id: toastId, message: label, onUndo: () => { setWorkoutItems(snapshot); restoreSelection(selSnap) } }])
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'z' && !e.shiftKey) {
         const latest = toastsRef.current.at(-1)
@@ -1249,7 +1432,7 @@ export function DayView() {
               key={id}
               variant={density === id ? 'default' : 'ghost'}
               size="icon"
-              onClick={() => setDensity(id)}
+              onClick={() => { densityRef.current = id; setDensity(id) }}
               className="size-7 rounded-md"
             >
               {icon}
@@ -1334,6 +1517,32 @@ export function DayView() {
                             activeId={activeId}
                             isAltDrag={isAltDrag}
                             isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
+                            showSets={density !== 'contracted'}
+                            selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
+                            onSetCountChange={count => setCountsRef.current.set(item.id, count)}
+                            insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? insertSetCmd : null}
+                            deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? deleteSetCmd : null}
+                            onSetDeleted={newIndex => {
+                              setDeleteSetCmd(null)
+                              if (newIndex === null) {
+                                setSelectedSetIndexBoth(null)
+                                setFocusLevelBoth('item')
+                              } else {
+                                setSelectedSetIndexBoth(newIndex)
+                              }
+                            }}
+                            defaultSetCount={defaultSetCount}
+                            onSetAdded={newIndex => {
+                              setCountsRef.current.set(item.id, (setCountsRef.current.get(item.id) ?? 1) + 1)
+                              setInsertSetCmd(null)
+                              setNavActiveBoth(true)
+                              setFocusLevelBoth('set')
+                              setSelectedItemBoth(item.id)
+                              setAnchorItemBoth(item.id)
+                              setSelectedChildBoth(null)
+                              setAnchorChildBoth(null)
+                              setSelectedSetIndexBoth(newIndex)
+                            }}
                           />
                         ) : (
                           <SortableSectionCard
@@ -1350,6 +1559,35 @@ export function DayView() {
                             draggingId={activeId}
                             isAltDrag={isAltDrag}
                             isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
+                            showSets={density !== 'contracted'}
+                            selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
+                            selectedSetChildId={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedChildId ?? undefined) : undefined}
+                            getSetCountCallback={childId => count => setCountsRef.current.set(childId, count)}
+                            insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? insertSetCmd : null}
+                            insertSetChildId={selectedChildId ?? undefined}
+                            deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? deleteSetCmd : null}
+                            deleteSetChildId={selectedChildId ?? undefined}
+                            onChildSetDeleted={(_childId, newIndex) => {
+                              setDeleteSetCmd(null)
+                              if (newIndex === null) {
+                                setSelectedSetIndexBoth(null)
+                                setFocusLevelBoth('child')
+                              } else {
+                                setSelectedSetIndexBoth(newIndex)
+                              }
+                            }}
+                            defaultSetCount={defaultSetCount}
+                            onChildSetAdded={(childId, newIndex) => {
+                              setCountsRef.current.set(childId, (setCountsRef.current.get(childId) ?? 1) + 1)
+                              setInsertSetCmd(null)
+                              setNavActiveBoth(true)
+                              setFocusLevelBoth('set')
+                              setSelectedItemBoth(item.id)
+                              setAnchorItemBoth(item.id)
+                              setSelectedChildBoth(childId)
+                              setAnchorChildBoth(childId)
+                              setSelectedSetIndexBoth(newIndex)
+                            }}
                             isChildSelected={navActive && focusLevel === 'child' && selectedItemId === item.id ? childId => {
                               const sec = item as SectionItem
                               const aIdx = sec.children.findIndex(c => c.id === anchorChildId)
@@ -1420,6 +1658,24 @@ export function DayView() {
               )}>
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Settings</p>
                 <div className="flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-muted-foreground">Default sets per exercise</p>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => updateDefaultSetCount(defaultSetCount - 1)}
+                        className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                      >
+                        −
+                      </button>
+                      <span className="w-5 text-center text-sm tabular-nums">{defaultSetCount}</span>
+                      <button
+                        onClick={() => updateDefaultSetCount(defaultSetCount + 1)}
+                        className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
                   <div>
                     <p className="mb-2 text-xs text-muted-foreground">Selection frame color</p>
                     <div className="flex flex-wrap gap-2">
@@ -1477,6 +1733,8 @@ export function DayView() {
                     { keys: ['N'],             label: 'Add exercise below selection' },
                     { keys: ['S'],             label: 'Group selection into section' },
                     { keys: ['⌫'],             label: 'Delete selected item(s)' },
+                    { keys: ['⌘', 'C'],        label: 'Copy selection' },
+                    { keys: ['⌘', 'V'],        label: 'Paste after selection' },
                     { keys: ['⌘', 'Z'],        label: 'Undo last deletion' },
                     { keys: ['Option', 'Drag'], label: 'Duplicate an exercise' },
                   ],
