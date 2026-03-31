@@ -15,6 +15,8 @@ import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } 
 import { CSS } from '@dnd-kit/utilities'
 import { DayHeader } from '@/components/training/DayCard'
 import { ExerciseCard } from '@/components/training/ExerciseCard'
+import { ExerciseSidebar } from '@/components/training/ExerciseSidebar'
+import { DaySidebar } from '@/components/training/DaySidebar'
 import { DragHandle } from '@/components/dnd/DragHandle'
 import { Button } from '@/components/ui/button'
 import { ToastContainer, type ToastItem } from '@/components/ui/toast'
@@ -673,6 +675,7 @@ function MorphOverlay({ exercise, isAltDrag }: { exercise: Exercise; isAltDrag: 
 }
 
 export function DayView() {
+  const [sidebarTab, setSidebarTab] = useState<'exercise' | 'day' | 'block'>('exercise')
   const [mode, setMode] = useState<Mode>('edit')
   const modeRef = useRef<Mode>('edit')
   const [colored, setColored] = useState(false)
@@ -753,11 +756,55 @@ export function DayView() {
   const setCountsRef = useRef<Map<string, number>>(new Map())
   const [insertSetCmd, setInsertSetCmd] = useState<{ afterIndex: number } | null>(null)
   const [deleteSetCmd, setDeleteSetCmd] = useState<{ index: number } | null>(null)
-  const [workoutItems, setWorkoutItems] = useState<WorkoutItem[]>([
-    { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: false },
-  ])
+  const [workoutItems, setWorkoutItems] = useState<WorkoutItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('workoutItems_day0')
+      if (saved) return JSON.parse(saved)
+    } catch {}
+    const ex = (id: string) => exercises.find(e => e.id === id)!
+    const item = (exerciseId: string): ExerciseItem => ({
+      id: crypto.randomUUID(), type: 'exercise', exercise: ex(exerciseId), autoOpen: false,
+    })
+    return [
+      item('ex-001'),
+      { id: crypto.randomUUID(), type: 'section', title: 'Push Accessories', subtitle: 'Chest & shoulder isolation', estimatedTime: '15m', children: [item('ex-002'), item('ex-005')] } satisfies SectionItem,
+      item('ex-010'),
+      { id: crypto.randomUUID(), type: 'section', title: 'Pull Accessories', subtitle: 'Back width & thickness', estimatedTime: '20m', children: [item('ex-012'), item('ex-015'), item('ex-017')] } satisfies SectionItem,
+      item('ex-022'),
+      item('ex-035'),
+      item('ex-028'),
+    ]
+  })
   const workoutItemsRef = useRef(workoutItems)
   useEffect(() => { workoutItemsRef.current = workoutItems }, [workoutItems])
+  useEffect(() => {
+    localStorage.setItem('workoutItems_day0', JSON.stringify(workoutItems))
+  }, [workoutItems])
+
+
+  const [setCountVersion, setSetCountVersion] = useState(0)
+
+  const exerciseCount = useMemo(() =>
+    workoutItems.reduce((n, item) => n + (item.type === 'exercise' ? 1 : item.children.length), 0),
+    [workoutItems]
+  )
+
+  const totalSets = useMemo(() => {
+    const flat = workoutItems.flatMap(item =>
+      item.type === 'exercise' ? [item] : item.children
+    )
+    return flat.reduce((sum, item) =>
+      sum + (setCountsRef.current.get(item.id) ?? defaultSetCount), 0
+    )
+  }, [workoutItems, setCountVersion, defaultSetCount])
+
+  const focusedExercise = useMemo(() => {
+    const flat: ExerciseItem[] = workoutItems.flatMap(item =>
+      item.type === 'exercise' ? [item] : item.children
+    )
+    const targetId = selectedChildId ?? selectedItemId
+    return flat.find(item => item.id === targetId)?.exercise ?? null
+  }, [workoutItems, selectedItemId, selectedChildId])
   const [activeId, setActiveId] = useState<string | null>(null)
   const activeIdRef = useRef<string | null>(null)
   function setActiveIdBoth(id: string | null) { activeIdRef.current = id; setActiveId(id) }
@@ -1411,7 +1458,7 @@ export function DayView() {
   )
 
   return (
-    <div className="min-h-screen bg-muted p-6" style={{ '--sel-ring': hexToRgba(selectionColor, 0.7) } as React.CSSProperties} onClick={() => {
+    <div className="flex h-screen bg-muted" style={{ '--sel-ring': hexToRgba(selectionColor, 0.7) } as React.CSSProperties} onClick={() => {
       if (modeRef.current === 'edit' && navActiveRef.current) {
         setNavActiveBoth(false)
         setFocusLevelBoth('column')
@@ -1421,8 +1468,9 @@ export function DayView() {
         setAnchorChildBoth(null)
       }
     }}>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <ToastContainer toasts={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
-      <div className="mb-4 flex items-center justify-end gap-2">
+      <div className="shrink-0 p-6 pb-4 flex items-center justify-end gap-2">
         <Button variant="ghost" size="icon" onClick={() => setColored((c) => !c)}>
           <PaletteIcon rainbow={colored} />
         </Button>
@@ -1464,7 +1512,8 @@ export function DayView() {
         </div>
       </div>
 
-      <div className="flex gap-4 overflow-x-auto px-1 pt-1 pb-4">
+      <div className="flex-1 overflow-y-auto overflow-x-auto">
+      <div className="flex gap-4 px-6 pt-5 pb-6 min-h-full">
         {days.map((day, i) => (
           <div key={day.date} className="flex w-72 shrink-0 flex-col gap-2">
             {i === 0 && <DayHeader {...day} />}
@@ -1519,7 +1568,7 @@ export function DayView() {
                             isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
                             showSets={density !== 'contracted'}
                             selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
-                            onSetCountChange={count => setCountsRef.current.set(item.id, count)}
+                            onSetCountChange={count => { setCountsRef.current.set(item.id, count); setSetCountVersion(v => v + 1) }}
                             insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? insertSetCmd : null}
                             deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? deleteSetCmd : null}
                             onSetDeleted={newIndex => {
@@ -1534,6 +1583,7 @@ export function DayView() {
                             defaultSetCount={defaultSetCount}
                             onSetAdded={newIndex => {
                               setCountsRef.current.set(item.id, (setCountsRef.current.get(item.id) ?? 1) + 1)
+                              setSetCountVersion(v => v + 1)
                               setInsertSetCmd(null)
                               setNavActiveBoth(true)
                               setFocusLevelBoth('set')
@@ -1562,7 +1612,7 @@ export function DayView() {
                             showSets={density !== 'contracted'}
                             selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
                             selectedSetChildId={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedChildId ?? undefined) : undefined}
-                            getSetCountCallback={childId => count => setCountsRef.current.set(childId, count)}
+                            getSetCountCallback={childId => count => { setCountsRef.current.set(childId, count); setSetCountVersion(v => v + 1) }}
                             insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? insertSetCmd : null}
                             insertSetChildId={selectedChildId ?? undefined}
                             deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? deleteSetCmd : null}
@@ -1579,6 +1629,7 @@ export function DayView() {
                             defaultSetCount={defaultSetCount}
                             onChildSetAdded={(childId, newIndex) => {
                               setCountsRef.current.set(childId, (setCountsRef.current.get(childId) ?? 1) + 1)
+                              setSetCountVersion(v => v + 1)
                               setInsertSetCmd(null)
                               setNavActiveBoth(true)
                               setFocusLevelBoth('set')
@@ -1639,9 +1690,47 @@ export function DayView() {
           </div>
         ))}
       </div>
+      </div>{/* end scroll wrapper */}
+      </div>{/* end main content */}
+
+      {/* Sidebar */}
+      <aside
+        className="flex w-72 shrink-0 flex-col border-l border-border bg-card"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="p-3 border-b border-border">
+          <div className="flex rounded-lg border border-border bg-muted p-0.5">
+            {(['exercise', 'day', 'block'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setSidebarTab(tab)}
+                className={cn(
+                  'flex-1 rounded-md py-1.5 text-xs font-medium capitalize transition-colors',
+                  sidebarTab === tab
+                    ? 'bg-background text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {tab.charAt(0).toUpperCase() + tab.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {sidebarTab === 'exercise' && (
+            <ExerciseSidebar exercise={focusedExercise} />
+          )}
+          {sidebarTab === 'day' && (
+            <DaySidebar exerciseCount={exerciseCount} totalSets={totalSets} />
+          )}
+          {sidebarTab === 'block' && (
+            <p className="text-xs text-muted-foreground">Block</p>
+          )}
+        </div>
+      </aside>
 
       {/* Bottom-right controls */}
-      <div className="fixed bottom-6 right-6 flex items-center gap-2">
+      <div className="fixed bottom-6 right-[calc(18rem+1.5rem)] flex items-center gap-2">
 
         {/* Settings */}
         <PopoverPrimitive.Root>
