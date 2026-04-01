@@ -21,40 +21,59 @@ interface ExerciseCardProps {
   showSets?: boolean
   selectedSetIndex?: number
   onSetCountChange?: (count: number) => void
+  onColCountChange?: (count: number) => void
   onSetAdded?: (newIndex: number) => void
   insertSetCmd?: { afterIndex: number } | null
   deleteSetCmd?: { index: number } | null
   onSetDeleted?: (newIndex: number | null) => void
   defaultSetCount?: number
+  focusedCell?: { rowIndex: number; colIndex: number } | null
   className?: string
+  panelAnchorId?: string
 }
 
 function SetsTable({
   selectedSetIndex,
   onSetCountChange,
+  onColCountChange,
   onSetAdded,
   insertSetCmd,
   deleteSetCmd,
   onSetDeleted,
   defaultSetCount,
+  focusedCell,
 }: {
   selectedSetIndex?: number
   onSetCountChange?: (count: number) => void
+  onColCountChange?: (count: number) => void
   onSetAdded?: (newIndex: number) => void
   insertSetCmd?: { afterIndex: number } | null
   deleteSetCmd?: { index: number } | null
   onSetDeleted?: (newIndex: number | null) => void
   defaultSetCount?: number
+  focusedCell?: { rowIndex: number; colIndex: number } | null
 }) {
+  const COL_COUNT = 2
   const [sets, setSets] = useState<SetRow[]>(() =>
     Array.from({ length: defaultSetCount ?? 1 }, () => ({ id: crypto.randomUUID(), weight: '', reps: '' }))
   )
   const [localSelectedIndex, setLocalSelectedIndex] = useState<number | null>(null)
   const displayIndex = selectedSetIndex ?? localSelectedIndex
+  const inputRefs = useRef<Array<[HTMLInputElement | null, HTMLInputElement | null]>>([])
+
+  const onSetCountChangeRef = useRef(onSetCountChange)
+  useEffect(() => { onSetCountChangeRef.current = onSetCountChange })
+
+  const onColCountChangeRef = useRef(onColCountChange)
+  useEffect(() => { onColCountChangeRef.current = onColCountChange })
 
   useEffect(() => {
-    onSetCountChange?.(sets.length)
-  }, [sets.length, onSetCountChange])
+    onSetCountChangeRef.current?.(sets.length)
+  }, [sets.length])
+
+  useEffect(() => {
+    onColCountChangeRef.current?.(COL_COUNT)
+  }, [])
 
   useEffect(() => {
     if (selectedSetIndex === undefined) setLocalSelectedIndex(null)
@@ -80,14 +99,16 @@ function SetsTable({
     })
   }, [deleteSetCmd])
 
+  useEffect(() => {
+    if (!focusedCell) return
+    inputRefs.current[focusedCell.rowIndex]?.[focusedCell.colIndex]?.focus()
+  }, [focusedCell])
+
   function addSet() {
-    setSets(prev => {
-      const next = [...prev, { id: crypto.randomUUID(), weight: '', reps: '' }]
-      const newIndex = next.length - 1
-      setLocalSelectedIndex(newIndex)
-      onSetAdded?.(newIndex)
-      return next
-    })
+    const newIndex = sets.length
+    setSets(prev => [...prev, { id: crypto.randomUUID(), weight: '', reps: '' }])
+    setLocalSelectedIndex(newIndex)
+    onSetAdded?.(newIndex)
   }
 
   function updateSet(id: string, field: keyof Omit<SetRow, 'id'>, value: string) {
@@ -118,6 +139,7 @@ function SetsTable({
               </td>
               <td className="py-0.5 px-1">
                 <input
+                  ref={el => { if (!inputRefs.current[i]) inputRefs.current[i] = [null, null]; inputRefs.current[i][0] = el }}
                   type="text"
                   value={set.weight}
                   onChange={e => updateSet(set.id, 'weight', e.target.value)}
@@ -127,6 +149,7 @@ function SetsTable({
               </td>
               <td className="py-0.5 px-1">
                 <input
+                  ref={el => { if (!inputRefs.current[i]) inputRefs.current[i] = [null, null]; inputRefs.current[i][1] = el }}
                   type="text"
                   value={set.reps}
                   onChange={e => updateSet(set.id, 'reps', e.target.value)}
@@ -150,7 +173,7 @@ function SetsTable({
   )
 }
 
-export function ExerciseCard({ exercise, onExerciseChange, onDelete, onCancel, autoOpen, showSets, selectedSetIndex, onSetCountChange, onSetAdded, insertSetCmd, deleteSetCmd, onSetDeleted, defaultSetCount, className }: ExerciseCardProps) {
+export function ExerciseCard({ exercise, onExerciseChange, onDelete, onCancel, autoOpen, showSets, selectedSetIndex, onSetCountChange, onColCountChange, onSetAdded, insertSetCmd, deleteSetCmd, onSetDeleted, defaultSetCount, focusedCell, className, panelAnchorId }: ExerciseCardProps) {
   const cardRef = useRef<HTMLDivElement>(null)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -158,7 +181,7 @@ export function ExerciseCard({ exercise, onExerciseChange, onDelete, onCancel, a
     <Card ref={cardRef} className={cn('group/card', className)}>
       <CardContent className="px-4">
         <div className="flex items-center gap-2">
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0" data-panel-anchor={panelAnchorId}>
             <ExerciseSearchPopover
               currentExercise={exercise}
               onSelect={onExerciseChange ?? (() => {})}
@@ -213,11 +236,13 @@ export function ExerciseCard({ exercise, onExerciseChange, onDelete, onCancel, a
               <SetsTable
                 selectedSetIndex={selectedSetIndex}
                 onSetCountChange={onSetCountChange}
+                onColCountChange={onColCountChange}
                 onSetAdded={onSetAdded}
                 insertSetCmd={insertSetCmd}
                 deleteSetCmd={deleteSetCmd}
                 onSetDeleted={onSetDeleted}
                 defaultSetCount={defaultSetCount}
+                focusedCell={focusedCell}
               />
             </div>
           </div>

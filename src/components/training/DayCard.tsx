@@ -1,5 +1,4 @@
 import { useRef, useState, useEffect } from 'react'
-import { Clock } from 'lucide-react'
 
 export type Status = 'not-started' | 'in-progress' | 'complete'
 
@@ -11,6 +10,7 @@ export interface DayCardProps {
   estimatedTime: string
   onTitleChange?: (value: string) => void
   onSubtitleChange?: (value: string) => void
+  panelAnchorId?: string
 }
 
 export const statusConfig: Record<Status, { label: string; variant: 'secondary' | 'default' | 'outline' }> = {
@@ -19,7 +19,7 @@ export const statusConfig: Record<Status, { label: string; variant: 'secondary' 
   'complete': { label: 'Complete', variant: 'outline' },
 }
 
-export function DayHeader({ date, title, subtitle, estimatedTime, onTitleChange, onSubtitleChange }: DayCardProps) {
+export function DayHeader({ date, title, subtitle, onTitleChange, onSubtitleChange, panelAnchorId }: DayCardProps) {
   const titleRef = useRef<HTMLSpanElement>(null)
   const subtitleRef = useRef<HTMLSpanElement>(null)
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -38,6 +38,7 @@ export function DayHeader({ date, title, subtitle, estimatedTime, onTitleChange,
           ref={titleRef}
           contentEditable
           suppressContentEditableWarning
+          data-panel-anchor={panelAnchorId}
           className={`text-base font-semibold text-foreground leading-snug ${editableClass}`}
           onBlur={(e) => {
             const val = e.currentTarget.textContent ?? ''
@@ -86,10 +87,6 @@ export function DayHeader({ date, title, subtitle, estimatedTime, onTitleChange,
           }}
         >
           {subtitleValue}
-        </span>
-        <span className="shrink-0 flex items-center gap-1 text-xs text-muted-foreground">
-          <Clock className="size-3" />
-          {estimatedTime}
         </span>
       </div>
     </div>

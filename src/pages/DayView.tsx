@@ -14,6 +14,7 @@ import {
 import { SortableContext, useSortable, verticalListSortingStrategy, arrayMove } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { DayHeader } from '@/components/training/DayCard'
+import { DurationPanel } from '@/components/training/DurationPanel'
 import { ExerciseCard } from '@/components/training/ExerciseCard'
 import { ExerciseSidebar } from '@/components/training/ExerciseSidebar'
 import { DaySidebar } from '@/components/training/DaySidebar'
@@ -29,6 +30,7 @@ interface ExerciseItem {
   type: 'exercise'
   exercise: Exercise
   autoOpen: boolean
+  estimatedTime?: string
 }
 
 interface SectionItem {
@@ -40,6 +42,7 @@ interface SectionItem {
   children: ExerciseItem[]
   autoSelect?: boolean
   isGeneratingName?: boolean
+  collapsed?: boolean
 }
 
 async function generateSectionName(exercises: Exercise[]): Promise<string> {
@@ -71,7 +74,7 @@ async function generateSectionName(exercises: Exercise[]): Promise<string> {
   return data.choices[0].message.content.trim()
 }
 
-type WorkoutItem = ExerciseItem | SectionItem
+export type WorkoutItem = ExerciseItem | SectionItem
 
 function deepCopyItem(item: WorkoutItem): WorkoutItem {
   if (item.type === 'exercise') return { ...item, id: crypto.randomUUID(), autoOpen: false }
@@ -186,7 +189,7 @@ function SectionCard({
   isGeneratingName,
 }: {
   section: SectionItem
-  onUpdate?: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime'>>) => void
+  onUpdate?: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime' | 'collapsed'>>) => void
   className?: string
   dragListeners?: DraggableSyntheticListeners
   dragAttributes?: DraggableAttributes
@@ -198,7 +201,6 @@ function SectionCard({
 }) {
   const titleRef = useRef<HTMLSpanElement>(null)
   const subtitleRef = useRef<HTMLSpanElement>(null)
-  const timeRef = useRef<HTMLSpanElement>(null)
   const editableClass = 'cursor-text outline-none'
   const [showNote, setShowNote] = useState(() => section.subtitle.length > 0)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -238,6 +240,7 @@ function SectionCard({
               ref={titleRef}
               contentEditable
               suppressContentEditableWarning
+              data-panel-anchor={section.id}
               className={`flex-1 text-sm font-semibold text-foreground leading-snug ${editableClass}`}
               onBlur={e => onUpdate?.({ title: e.currentTarget.textContent ?? '' })}
               onKeyDown={e => {
@@ -248,21 +251,6 @@ function SectionCard({
               {section.title}
             </span>
           )}
-          <span className="shrink-0 flex items-center gap-1 text-xs text-muted-foreground">
-            <Clock className="size-3" />
-            <span
-              ref={timeRef}
-              contentEditable
-              suppressContentEditableWarning
-              className={`min-w-[2ch] ${editableClass}`}
-              onBlur={e => onUpdate?.({ estimatedTime: e.currentTarget.textContent ?? '' })}
-              onKeyDown={e => {
-                if (e.key === 'Enter' || e.key === 'Escape') { e.preventDefault(); timeRef.current?.blur() }
-              }}
-            >
-              {section.estimatedTime}
-            </span>
-          </span>
           <PopoverPrimitive.Root open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverPrimitive.Trigger
               tabIndex={-1}
@@ -368,11 +356,13 @@ function SortableExerciseCard({
   showSets,
   selectedSetIndex,
   onSetCountChange,
+  onColCountChange,
   onSetAdded,
   insertSetCmd,
   deleteSetCmd,
   onSetDeleted,
   defaultSetCount,
+  focusedCell,
 }: {
   item: ExerciseItem
   onExerciseChange: (ex: Exercise) => void
@@ -384,11 +374,13 @@ function SortableExerciseCard({
   showSets?: boolean
   selectedSetIndex?: number
   onSetCountChange?: (count: number) => void
+  onColCountChange?: (count: number) => void
   onSetAdded?: (newIndex: number) => void
   insertSetCmd?: { afterIndex: number } | null
   deleteSetCmd?: { index: number } | null
   onSetDeleted?: (newIndex: number | null) => void
   defaultSetCount?: number
+  focusedCell?: { rowIndex: number; colIndex: number } | null
 }) {
   const {
     attributes,
@@ -430,12 +422,15 @@ function SortableExerciseCard({
         showSets={showSets}
         selectedSetIndex={selectedSetIndex}
         onSetCountChange={onSetCountChange}
+        onColCountChange={onColCountChange}
         onSetAdded={onSetAdded}
         insertSetCmd={insertSetCmd}
         deleteSetCmd={deleteSetCmd}
         onSetDeleted={onSetDeleted}
         defaultSetCount={defaultSetCount}
+        focusedCell={focusedCell}
         className={isSelected ? 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted' : undefined}
+        panelAnchorId={item.id}
       />
     </div>
   )
@@ -456,6 +451,7 @@ function SortableSectionCard({
   selectedSetIndex,
   selectedSetChildId,
   getSetCountCallback,
+  getColCountCallback,
   onChildSetAdded,
   insertSetCmd,
   insertSetChildId,
@@ -463,9 +459,11 @@ function SortableSectionCard({
   deleteSetChildId,
   onChildSetDeleted,
   defaultSetCount,
+  focusedChildCell,
+  focusedCellChildId,
 }: {
   item: SectionItem
-  onUpdate: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime'>>) => void
+  onUpdate: (updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime' | 'collapsed'>>) => void
   onExerciseChange: (id: string, ex: Exercise) => void
   onDeleteExercise: (id: string) => void
   onCancelExercise?: (id: string) => void
@@ -478,6 +476,7 @@ function SortableSectionCard({
   selectedSetIndex?: number
   selectedSetChildId?: string
   getSetCountCallback?: (childId: string) => ((count: number) => void) | undefined
+  getColCountCallback?: (childId: string) => ((count: number) => void) | undefined
   onChildSetAdded?: (childId: string, newIndex: number) => void
   insertSetCmd?: { afterIndex: number } | null
   insertSetChildId?: string
@@ -485,8 +484,10 @@ function SortableSectionCard({
   deleteSetChildId?: string
   onChildSetDeleted?: (childId: string, newIndex: number | null) => void
   defaultSetCount?: number
+  focusedChildCell?: { rowIndex: number; colIndex: number } | null
+  focusedCellChildId?: string
 }) {
-  const [collapsed, setCollapsed] = useState(false)
+  const collapsed = item.collapsed ?? false
   const {
     attributes, listeners, setNodeRef, setActivatorNodeRef,
     transform, transition, isDragging,
@@ -497,6 +498,7 @@ function SortableSectionCard({
   return (
     <div
       ref={setNodeRef}
+      data-dnd-id={item.id}
       style={{
         transform: CSS.Transform.toString(transform),
         transition: transition ? 'transform 400ms cubic-bezier(0.4, 0, 0.2, 1)' : undefined,
@@ -515,7 +517,7 @@ function SortableSectionCard({
         dragAttributes={attributes}
         setActivatorRef={setActivatorNodeRef as unknown as (el: HTMLButtonElement | null) => void}
         collapsed={collapsed}
-        onToggleCollapse={() => setCollapsed(c => !c)}
+        onToggleCollapse={() => onUpdate({ collapsed: !item.collapsed })}
         autoSelect={item.autoSelect}
         isGeneratingName={item.isGeneratingName}
       />
@@ -542,11 +544,13 @@ function SortableSectionCard({
                     showSets={showSets}
                     selectedSetIndex={child.id === selectedSetChildId ? selectedSetIndex : undefined}
                     onSetCountChange={getSetCountCallback?.(child.id)}
+                    onColCountChange={getColCountCallback?.(child.id)}
                     onSetAdded={onChildSetAdded ? (newIndex: number) => onChildSetAdded(child.id, newIndex) : undefined}
                     insertSetCmd={child.id === insertSetChildId ? insertSetCmd : undefined}
                     deleteSetCmd={child.id === deleteSetChildId ? deleteSetCmd : undefined}
                     onSetDeleted={onChildSetDeleted ? (newIndex) => onChildSetDeleted(child.id, newIndex) : undefined}
                     defaultSetCount={defaultSetCount}
+                    focusedCell={child.id === focusedCellChildId ? focusedChildCell : null}
                   />
                 </Fragment>
               ))}
@@ -679,6 +683,10 @@ export function DayView() {
   const [mode, setMode] = useState<Mode>('edit')
   const modeRef = useRef<Mode>('edit')
   const [colored, setColored] = useState(false)
+  const [showDurationPanel, setShowDurationPanel] = useState(false)
+  const dayColumnRef = useRef<HTMLDivElement>(null)
+  const [panelOffsets, setPanelOffsets] = useState<Map<string, number>>(new Map())
+  const [dayContainerHeight, setDayContainerHeight] = useState(0)
   const [density, setDensity] = useState<Density>('medium')
   const densityRef = useRef<Density>('medium')
   const [selectionColor, setSelectionColor] = useState<string>(
@@ -699,8 +707,8 @@ export function DayView() {
   const selectedColRef = useRef(0)
   const [anchorCol, setAnchorCol] = useState(0)
   const anchorColRef = useRef(0)
-  const [focusLevel, setFocusLevel] = useState<'column' | 'item' | 'child' | 'set'>('column')
-  const focusLevelRef = useRef<'column' | 'item' | 'child' | 'set'>('column')
+  const [focusLevel, setFocusLevel] = useState<'column' | 'item' | 'child' | 'set' | 'cell'>('column')
+  const focusLevelRef = useRef<'column' | 'item' | 'child' | 'set' | 'cell'>('column')
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null)
   const selectedItemIdRef = useRef<string | null>(null)
   const [anchorItemId, setAnchorItemId] = useState<string | null>(null)
@@ -711,7 +719,7 @@ export function DayView() {
   const anchorChildIdRef = useRef<string | null>(null)
 
   type SelectionSnapshot = {
-    navActive: boolean; focusLevel: 'column' | 'item' | 'child' | 'set'
+    navActive: boolean; focusLevel: 'column' | 'item' | 'child' | 'set' | 'cell'
     selectedCol: number; anchorCol: number
     selectedItemId: string | null; anchorItemId: string | null
     selectedChildId: string | null; anchorChildId: string | null
@@ -743,7 +751,7 @@ export function DayView() {
     setAnchorChildBoth(snap.anchorChildId)
   }
 
-  function setFocusLevelBoth(v: 'column' | 'item' | 'child' | 'set') { focusLevelRef.current = v; setFocusLevel(v) }
+  function setFocusLevelBoth(v: 'column' | 'item' | 'child' | 'set' | 'cell') { focusLevelRef.current = v; setFocusLevel(v) }
   function setSelectedColBoth(v: number) { selectedColRef.current = v; setSelectedCol(v) }
   function setAnchorColBoth(v: number) { anchorColRef.current = v; setAnchorCol(v) }
   function setSelectedItemBoth(id: string | null) { selectedItemIdRef.current = id; setSelectedItemId(id) }
@@ -753,7 +761,15 @@ export function DayView() {
   const [selectedSetIndex, setSelectedSetIndex] = useState<number | null>(null)
   const selectedSetIndexRef = useRef<number | null>(null)
   function setSelectedSetIndexBoth(v: number | null) { selectedSetIndexRef.current = v; setSelectedSetIndex(v) }
+  const [selectedCellIndex, setSelectedCellIndex] = useState<number | null>(null)
+  const selectedCellIndexRef = useRef<number | null>(null)
+  function setSelectedCellIndexBoth(v: number | null) { selectedCellIndexRef.current = v; setSelectedCellIndex(v) }
   const setCountsRef = useRef<Map<string, number>>(new Map())
+  const colCountsRef = useRef<Map<string, number>>(new Map())
+  const handleSetCountChange = useCallback((id: string, count: number) => {
+    setCountsRef.current.set(id, count)
+    setSetCountVersion(v => v + 1)
+  }, [])
   const [insertSetCmd, setInsertSetCmd] = useState<{ afterIndex: number } | null>(null)
   const [deleteSetCmd, setDeleteSetCmd] = useState<{ index: number } | null>(null)
   const [workoutItems, setWorkoutItems] = useState<WorkoutItem[]>(() => {
@@ -781,6 +797,27 @@ export function DayView() {
     localStorage.setItem('workoutItems_day0', JSON.stringify(workoutItems))
   }, [workoutItems])
 
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!navActive) return
+    const targetId = selectedChildId ?? selectedItemId
+    if (!targetId) return
+    const container = scrollContainerRef.current
+    const el = container?.querySelector(`[data-dnd-id="${targetId}"]`) as HTMLElement | null
+    if (!container || !el) return
+    const PADDING = 48
+    const containerRect = container.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    const relTop = elRect.top - containerRect.top
+    const relBottom = elRect.bottom - containerRect.top
+    if (relTop < PADDING) {
+      container.scrollBy({ top: relTop - PADDING, behavior: 'smooth' })
+    } else if (relBottom > containerRect.height - PADDING) {
+      container.scrollBy({ top: relBottom - containerRect.height + PADDING, behavior: 'smooth' })
+    }
+  }, [navActive, selectedItemId, selectedChildId])
 
   const [setCountVersion, setSetCountVersion] = useState(0)
 
@@ -839,6 +876,13 @@ export function DayView() {
       }
       if (modeRef.current === 'edit' && e.key === 'Escape') {
         const target = e.target as HTMLElement
+        if (focusLevelRef.current === 'cell') {
+          e.preventDefault()
+          ;(document.activeElement as HTMLElement)?.blur()
+          setFocusLevelBoth('set')
+          setSelectedCellIndexBoth(null)
+          return
+        }
         if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
         if (navActiveRef.current) {
           e.preventDefault()
@@ -852,8 +896,17 @@ export function DayView() {
       }
       if (modeRef.current === 'edit' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         const target = e.target as HTMLElement
+        const level = focusLevelRef.current
+        if (level === 'cell') {
+          e.preventDefault()
+          const exerciseId = selectedChildIdRef.current ?? selectedItemIdRef.current
+          const colCount = exerciseId ? (colCountsRef.current.get(exerciseId) ?? 2) : 2
+          const cur = selectedCellIndexRef.current ?? 0
+          setSelectedCellIndexBoth(e.key === 'ArrowLeft' ? Math.max(0, cur - 1) : Math.min(colCount - 1, cur + 1))
+          return
+        }
         if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
-        if (!navActiveRef.current || focusLevelRef.current !== 'column') return
+        if (!navActiveRef.current || level !== 'column') return
         e.preventDefault()
         const newCol = e.key === 'ArrowLeft'
           ? Math.max(0, selectedColRef.current - 1)
@@ -863,7 +916,7 @@ export function DayView() {
       }
       if (modeRef.current === 'edit' && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
         const target = e.target as HTMLElement
-        if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
+        if (focusLevelRef.current !== 'cell' && (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
         if (!navActiveRef.current) return
         const level = focusLevelRef.current
         if (level === 'column') return
@@ -884,11 +937,32 @@ export function DayView() {
           const next = section.children[Math.max(0, Math.min(section.children.length - 1, idx + dir))]
           setSelectedChildBoth(next.id)
           if (!e.shiftKey) setAnchorChildBoth(next.id)
-        } else if (level === 'set') {
+        } else if (level === 'set' || level === 'cell') {
           const exerciseId = selectedChildIdRef.current ?? selectedItemIdRef.current
           const count = exerciseId ? (setCountsRef.current.get(exerciseId) ?? 1) : 1
           const cur = selectedSetIndexRef.current ?? 0
-          setSelectedSetIndexBoth(Math.max(0, Math.min(count - 1, cur + dir)))
+          const next = cur + dir
+          if (next >= 0 && next < count) {
+            setSelectedSetIndexBoth(next)
+          } else {
+            const flat: ExerciseItem[] = items.flatMap(i =>
+              i.type === 'exercise' ? [i] : i.children
+            )
+            const curIdx = flat.findIndex(e => e.id === exerciseId)
+            const nextExercise = flat[curIdx + dir]
+            if (!nextExercise) return
+            const nextCount = setCountsRef.current.get(nextExercise.id) ?? 1
+            const nextColCount = colCountsRef.current.get(nextExercise.id) ?? 2
+            const parentSection = items.find(i => i.type === 'section' && i.children.some(c => c.id === nextExercise.id)) as SectionItem | undefined
+            setSelectedItemBoth(parentSection?.id ?? nextExercise.id)
+            setAnchorItemBoth(parentSection?.id ?? nextExercise.id)
+            setSelectedChildBoth(parentSection ? nextExercise.id : null)
+            setAnchorChildBoth(parentSection ? nextExercise.id : null)
+            setSelectedSetIndexBoth(dir === 1 ? 0 : nextCount - 1)
+            if (level === 'cell') {
+              setSelectedCellIndexBoth(Math.min(selectedCellIndexRef.current ?? 0, nextColCount - 1))
+            }
+          }
         }
       }
       if (modeRef.current === 'edit' && e.key === 'Tab') {
@@ -912,6 +986,11 @@ export function DayView() {
         const items = workoutItemsRef.current
         const level = focusLevelRef.current
         if (!e.shiftKey) {
+          if (level === 'set' && densityRef.current !== 'contracted') {
+            setFocusLevelBoth('cell')
+            setSelectedCellIndexBoth(0)
+            return
+          }
           if (level === 'column') {
             const firstId = items[0]?.id ?? null
             setFocusLevelBoth('item')
@@ -940,7 +1019,11 @@ export function DayView() {
           }
         } else {
           // Shift+Tab: go up
-          if (level === 'set') {
+          if (level === 'cell') {
+            ;(document.activeElement as HTMLElement)?.blur()
+            setFocusLevelBoth('set')
+            setSelectedCellIndexBoth(null)
+          } else if (level === 'set') {
             setSelectedSetIndexBoth(null)
             if (selectedChildIdRef.current) {
               setFocusLevelBoth('child')
@@ -1430,11 +1513,47 @@ export function DayView() {
     }))
   }
 
-  function updateSection(id: string, updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime'>>) {
+  function updateExerciseTime(id: string, estimatedTime: string) {
+    setWorkoutItems(prev => prev.map(item => {
+      if (item.type === 'exercise') return item.id === id ? { ...item, estimatedTime } : item
+      return { ...item, children: item.children.map(c => c.id === id ? { ...c, estimatedTime } : c) }
+    }))
+  }
+
+  function updateSection(id: string, updates: Partial<Pick<SectionItem, 'title' | 'subtitle' | 'estimatedTime' | 'collapsed'>>) {
     setWorkoutItems(prev =>
       prev.map(item => item.id === id && item.type === 'section' ? { ...item, ...updates } : item)
     )
   }
+
+  useEffect(() => {
+    const container = dayColumnRef.current
+    if (!container) return
+
+    const measure = () => {
+      if (activeIdRef.current) return // skip during drag — transforms skew positions
+      const containerRect = container.getBoundingClientRect()
+      const newOffsets = new Map<string, number>()
+      container.querySelectorAll<HTMLElement>('[data-panel-anchor]').forEach(el => {
+        const id = el.getAttribute('data-panel-anchor')!
+        const rect = el.getBoundingClientRect()
+        newOffsets.set(id, rect.top - containerRect.top + rect.height / 2)
+      })
+      setPanelOffsets(new Map(newOffsets))
+      setDayContainerHeight(container.offsetHeight)
+    }
+
+    const ro = new ResizeObserver(measure)
+    ro.observe(container)
+    container.querySelectorAll<HTMLElement>('[data-panel-anchor]').forEach(el => ro.observe(el))
+    container.addEventListener('transitionend', measure)
+    measure()
+
+    return () => {
+      ro.disconnect()
+      container.removeEventListener('transitionend', measure)
+    }
+  }, [workoutItems])
 
   function addExerciseToSection(sectionId: string, afterIndex: number) {
     const newItem: ExerciseItem = { id: crypto.randomUUID(), type: 'exercise', exercise: exercises[0], autoOpen: true }
@@ -1471,6 +1590,9 @@ export function DayView() {
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
       <ToastContainer toasts={toasts} onDismiss={id => setToasts(t => t.filter(x => x.id !== id))} />
       <div className="shrink-0 p-6 pb-4 flex items-center justify-end gap-2">
+        <Button variant="ghost" size="icon" onClick={() => setShowDurationPanel(p => !p)} className={showDurationPanel ? 'text-foreground' : 'text-muted-foreground'}>
+          <Clock className="size-4" />
+        </Button>
         <Button variant="ghost" size="icon" onClick={() => setColored((c) => !c)}>
           <PaletteIcon rainbow={colored} />
         </Button>
@@ -1512,11 +1634,31 @@ export function DayView() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto overflow-x-auto">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-auto">
       <div className="flex gap-4 px-6 pt-5 pb-6 min-h-full">
         {days.map((day, i) => (
-          <div key={day.date} className="flex w-72 shrink-0 flex-col gap-2">
-            {i === 0 && <DayHeader {...day} />}
+          <div key={day.date} className="flex shrink-0 gap-2 items-start">
+            <div
+              className="shrink-0 overflow-hidden transition-[width,opacity] duration-300 ease-[cubic-bezier(0.4,0,0.2,1)]"
+              style={{ width: showDurationPanel ? 72 : 0, opacity: showDurationPanel ? 1 : 0 }}
+            >
+              <DurationPanel
+                items={i === 0 ? workoutItems : []}
+                panelOffsets={i === 0 ? panelOffsets : new Map()}
+                containerHeight={i === 0 ? dayContainerHeight : 0}
+                setCounts={setCountsRef.current}
+                setCountVersion={setCountVersion}
+                defaultSetCount={defaultSetCount}
+                dayAnchorId={i === 0 ? day.date : undefined}
+                onUpdateSection={(id: string, t: string) => updateSection(id, { estimatedTime: t })}
+                onUpdateExercise={updateExerciseTime}
+              />
+            </div>
+            <div
+              ref={i === 0 ? dayColumnRef : undefined}
+              className="w-72 shrink-0 flex flex-col gap-2"
+            >
+            {i === 0 && <DayHeader {...day} panelAnchorId={day.date} />}
             <div className={cn(
               'flex flex-col rounded-xl bg-foreground/6 p-3 transition-shadow duration-150',
               mode === 'edit' && navActive && focusLevel === 'column' && i >= colLo && i <= colHi && 'ring-2 ring-[var(--sel-ring)] ring-offset-2 ring-offset-muted',
@@ -1567,8 +1709,10 @@ export function DayView() {
                             isAltDrag={isAltDrag}
                             isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
                             showSets={density !== 'contracted'}
-                            selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
-                            onSetCountChange={count => { setCountsRef.current.set(item.id, count); setSetCountVersion(v => v + 1) }}
+                            selectedSetIndex={(navActive && (focusLevel === 'set' || focusLevel === 'cell') && selectedItemId === item.id) ? (selectedSetIndex ?? undefined) : undefined}
+                            focusedCell={navActive && focusLevel === 'cell' && selectedItemId === item.id && !selectedChildId ? { rowIndex: selectedSetIndex ?? 0, colIndex: selectedCellIndex ?? 0 } : null}
+                            onSetCountChange={count => handleSetCountChange(item.id, count)}
+                            onColCountChange={count => colCountsRef.current.set(item.id, count)}
                             insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? insertSetCmd : null}
                             deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && !selectedChildId ? deleteSetCmd : null}
                             onSetDeleted={newIndex => {
@@ -1610,9 +1754,12 @@ export function DayView() {
                             isAltDrag={isAltDrag}
                             isSelected={navActive && focusLevel === 'item' && idx >= itemLo && idx <= itemHi}
                             showSets={density !== 'contracted'}
-                            selectedSetIndex={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
-                            selectedSetChildId={navActive && focusLevel === 'set' && selectedItemId === item.id ? (selectedChildId ?? undefined) : undefined}
-                            getSetCountCallback={childId => count => { setCountsRef.current.set(childId, count); setSetCountVersion(v => v + 1) }}
+                            selectedSetIndex={navActive && (focusLevel === 'set' || focusLevel === 'cell') && selectedItemId === item.id ? (selectedSetIndex ?? undefined) : undefined}
+                            selectedSetChildId={navActive && (focusLevel === 'set' || focusLevel === 'cell') && selectedItemId === item.id ? (selectedChildId ?? undefined) : undefined}
+                            getSetCountCallback={childId => count => handleSetCountChange(childId, count)}
+                            getColCountCallback={childId => count => colCountsRef.current.set(childId, count)}
+                            focusedChildCell={navActive && focusLevel === 'cell' && selectedItemId === item.id && selectedChildId ? { rowIndex: selectedSetIndex ?? 0, colIndex: selectedCellIndex ?? 0 } : null}
+                            focusedCellChildId={navActive && focusLevel === 'cell' && selectedItemId === item.id ? (selectedChildId ?? undefined) : undefined}
                             insertSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? insertSetCmd : null}
                             insertSetChildId={selectedChildId ?? undefined}
                             deleteSetCmd={focusLevel === 'set' && selectedItemId === item.id && selectedChildId ? deleteSetCmd : null}
@@ -1687,6 +1834,7 @@ export function DayView() {
                 </div>
               )}
             </div>
+            </div>{/* end flex row */}
           </div>
         ))}
       </div>
